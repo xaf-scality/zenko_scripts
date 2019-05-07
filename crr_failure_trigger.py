@@ -27,19 +27,17 @@ failure_threshold = 2 # Failures at or greater than this number result in an
 failure_log_ret = 3   # Number of completed pods to expect for inspection
 ack_on_failure=True   # Send only one message per 'ack_timeout' value below
 ack_timout=86400
-kubectl_command_path = "/home/centos/zenko-stack/metalk8s-1.1.0-alpha1/.shell-env/metalk8s/bin/"
-kubectl_auth = "/home/centos/zenko-stack/metalk8s/inventory/galaxy-z/artifacts/admin.conf"
+kubectl_command_path = '/home/centos/zenko-stack/metalk8s-1.1.0-alpha1/.shell-env/metalk8s/bin/'
+kubectl_auth = '/home/centos/zenko-stack/metalk8s/inventory/galaxy-z/artifacts/admin.conf'
 email_on_failure=True
 email_recipient='centos@localhost'
-ack_file="/tmp/zenko_failures_ack"
+ack_file='/tmp/zenko_failures_ack'
 
 ##
 # Set env
 subenv = os.environ.copy()
 subenv["PATH"] = "{0}:{1}".format(kubectl_command_path, os.environ["PATH"])
 subenv["KUBECONFIG"] = kubectl_auth
-
-message_buffer = ''
 
 def send_message(subject, message):
     msg = MIMEText(message)
@@ -55,7 +53,7 @@ def do_something(subj, message):
             ack_t = int(ft.read())
             try:
                 if ack_t < (int(time.time()) - ack_timout):
-                    send_message('ATTN: Probem with Zenko CRR Retries (repeat notice)')
+                    send_message('ATTN: Probem with Zenko CRR Retries (repeat notice)', message)
                     with open(ack_file, "w") as ft:
                         ft.write(str(int(time.time())))
                     return
@@ -68,7 +66,6 @@ def do_something(subj, message):
 
 
 def check_retry_pods():
-    global message_buffer
     ##
     # Get the retry pod names
     retry_pods_text = subprocess.Popen("kubectl get pods | grep retry-failed |grep Completed | gawk '{print $1}'",
@@ -86,7 +83,7 @@ def check_retry_pods():
                         stdout=subprocess.PIPE).stdout.read().strip())
         except Exception as e:
             do_something('Problem checking retry pod logs',
-                    'problem with retry pod: {0}'.format(logtext['e']))
+                    'problem with retry pod: {0}'.format(e))
             continue
 
         if "error" in logtext:
