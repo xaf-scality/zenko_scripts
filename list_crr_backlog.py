@@ -1,9 +1,7 @@
 #!/usr/bin/python
-#
 # Quick-n-dirty to dump CRR backlog for a Zenko cloud destination. Can be
 # limited to destination+bucket as well but I haven't tested the output for
 # that.
-
 import os
 import boto3
 import argparse
@@ -13,6 +11,7 @@ from kafka import BrokerConnection, KafkaConsumer, TopicPartition
 from kafka.protocol.admin import ListGroupsRequest_v1, DescribeGroupsRequest_v1
 import socket
 import urllib
+import time
 
 ##
 # Configuration
@@ -21,22 +20,32 @@ import urllib
 # brokers
 KAFA_ADDRS=('10.233.66.185', '10.233.111.236', '10.233.80.157', '10.233.78.203', '10.233.124.236')
 KAFA_PORT=9092
+CONSUMER_TIMEOUT=2000
 
 bootstrap = []
 for s in KAFA_ADDRS:
     bootstrap.append("{0}:{1}".format(s, KAFA_PORT))
 
 ##
-# Base-2 human-readable, might want to make this base-10 
-def sizeof_fmt(num, suffix='B'):
+# Base-2 human-readable
+def sizeof_fmt2(num, suffix='B'):
     for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
         if abs(num) < 1024.0:
             return "%3.1f%s%s" % (num, unit, suffix)
         num /= 1024.0
     return "%.1f%s%s" % (num, 'Yi', suffix)
 
+##
+# Base 10 human-readable
+def sizeof_fmt10(num, suffix='B'):
+    for unit in ['','K','M','G','T','P','E','Z']:
+        if abs(num) < 1000.0:
+            return "%3.1f%s%s" % (num, unit, suffix)
+        num /= 1000.0
+    return "%.1f%s%s" % (num, 'Y', suffix)
+
 def list_avail_destinations(args, broker_addr, port):
-    ''' List the replication groups currenly using '''
+    ''' List the groups currenly using '''
     bc = BrokerConnection(broker_addr, int(port), socket.AF_INET)
     bc.connect_blocking()
 
@@ -75,16 +84,20 @@ def describe_group(args, topic):
         committed = consumer.committed(tp)
         consumer.seek_to_end(tp)
         last_offset = consumer.position(tp)
-        out += ({"topic": topic,
-                 "partition": part,
-                 "committed": committed,
-                 "last_offset": last_offset,
-                 "lag": (last_offset - committed)},)
+        try:
+            out += ({"topic": topic,
+                    "partition": part,
+                    "committed": committed,
+                    "last_offset": last_offset,
+                    "lag": (last_offset - committed)},)
+        except TypeError:
+            sys.stderr.write("bad/missing info on consumer group (doesn't exist?)\n")
+            sys.exit(1)
 
     consumer.close(autocommit=False)
     return out
 
-def dump_from_offset(args, topic, part, offset, end):
+def dump_from_offset(args, topic, part, offset, end, nownow=None):
     '''
     Dump from last comitted to last known offset. Or time-out. which is what
     usually happens.
@@ -95,7 +108,7 @@ def dump_from_offset(args, topic, part, offset, end):
         bootstrap_servers=bootstrap,
         group_id="backbeat-replication-group-{0}".format(args.destination),
         enable_auto_commit=False,
-        consumer_timeout_ms=1000
+        consumer_timeout_ms=CONSUMER_TIMEOUT
     )
     partition = TopicPartition(topic, part)
     consumer.assign([partition])
@@ -103,28 +116,34 @@ def dump_from_offset(args, topic, part, offset, end):
 
     ttl_bytes = 0
     o_count = 0
+    queuelist = {}
     for msg in consumer:
         if msg.offset > end: break
         else:
             logline = json.loads(msg.value)
             if args.bucket and logline['bucket'] != args.bucket:
                 continue
-
             value = json.loads(logline['value'])
             for backend in value["replicationInfo"]['backends']:
                 if backend['site'] == args.destination:
-                    sys.stdout.write('src loc: {0}'.format(value['dataStoreName']))
+                    line = ""
+                    queue_time = nownow - (float(msg.timestamp)/1000)
+                    
+                    line += 'src: {0}, part: {1}'.format(value['dataStoreName'], part)
                     if args.bucket == False:
-                        sys.stdout.write(':{0}'.format(logline['bucket']))
-                    sys.stdout.write(', key: "{0}"'.format(value['key']))
+                        line += ':{0}'.format(logline['bucket'])
+                    line += ', key: "{0}"'.format(value['key'])
                     if "isDeleteMarker" in value and value["isDeleteMarker"] == True:
-                        print(" (delete)")
+                        line += " (delete)"
                     else:
-                        print(", size: {0}".format(sizeof_fmt(int(value['content-length']))))
+                        line += ", size: {0}".format(sizeof_fmt10(int(value['content-length'])))
                         ttl_bytes += int(value['content-length'])
+                    line += ", {0:.2f} sec".format(round(queue_time, 2))
                     o_count += 1
-                    break
-    return o_count, ttl_bytes
+                    queuelist["{0}{1}".format(str(int(msg.timestamp)), value['key'])] = line
+                    break # we hit the backend we're looking for. stop.
+    
+    return o_count, ttl_bytes, queuelist
 
 if __name__ == "__main__":
 
@@ -158,8 +177,14 @@ if __name__ == "__main__":
         else:
             o_count = 0
             ttl_bytes = 0
+            output = {}
+            rightnow = time.time()
             for zg in zgroupinfo:
-                count, obytes = dump_from_offset(args, 'backbeat-replication', zg['partition'], zg['committed'], zg['last_offset'])
+                count, obytes, queuelist = dump_from_offset(
+                        args, 'backbeat-replication', zg['partition'], zg['committed'], zg['last_offset'], nownow=rightnow)
+                output.update(queuelist)
                 o_count += count
                 ttl_bytes += obytes
-            print("{0} objects for {1}".format(o_count, sizeof_fmt(ttl_bytes)))
+            for key in sorted(output):
+                print("{0}".format(output[key]))
+            print("{0} objects for {1}".format(o_count, sizeof_fmt10(ttl_bytes)))
