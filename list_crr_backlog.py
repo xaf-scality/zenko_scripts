@@ -20,11 +20,16 @@ import time
 # brokers
 KAFA_ADDRS=('10.233.66.185', '10.233.111.236', '10.233.80.157', '10.233.78.203', '10.233.124.236')
 KAFA_PORT=9092
-CONSUMER_TIMEOUT=2000
+CONSUMER_TIMEOUT=500
 
 bootstrap = []
 for s in KAFA_ADDRS:
     bootstrap.append("{0}:{1}".format(s, KAFA_PORT))
+
+
+globals = {
+    "max_q_time": 0
+}
 
 ##
 # Base-2 human-readable
@@ -102,7 +107,7 @@ def dump_from_offset(args, topic, part, offset, end, nownow=None):
     Dump from last comitted to last known offset. Or time-out. which is what
     usually happens.
     '''
-    global bootstrap
+    global bootstrap, globals
 
     consumer = KafkaConsumer(
         bootstrap_servers=bootstrap,
@@ -128,11 +133,12 @@ def dump_from_offset(args, topic, part, offset, end, nownow=None):
                 if backend['site'] == args.destination:
                     line = ""
                     queue_time = nownow - (float(msg.timestamp)/1000)
-                    
-                    line += 'src: {0}, part: {1}'.format(value['dataStoreName'], part)
+                    if globals['max_q_time'] < queue_time:
+                        globals['max_q_time'] = queue_time
+                    line += 'src: {0}'.format(value['dataStoreName'])
                     if args.bucket == False:
                         line += ':{0}'.format(logline['bucket'])
-                    line += ', key: "{0}"'.format(value['key'])
+                    line += ', part: {0}, key: "{1}"'.format(part, value['key'])
                     if "isDeleteMarker" in value and value["isDeleteMarker"] == True:
                         line += " (delete)"
                     else:
@@ -156,17 +162,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.brokerlist:
+        bootstrap = []
         brokerlist = args.brokerlist.split(',')
-        for n in range(0, len(brokerlist)-1):
-            brokerlist[n] = brokerlist[n].strip()
-    else:
-        brokerlist = bootstrap
+        for n in range(0, len(brokerlist)):
+            bootstrap.append(brokerlist[n].strip())
 
     if args.queues:
-        for broker in brokerlist:
+        for broker in bootstrap:
             br = broker.split(":")[0]
             pt = broker.split(":")[1]
             list_avail_destinations(args, br, pt)
+        sys.exit(0)
+
     if args.destination:
         zgroupinfo = describe_group(args, 'backbeat-replication')
 
@@ -177,14 +184,27 @@ if __name__ == "__main__":
         else:
             o_count = 0
             ttl_bytes = 0
+            part_count = {}
             output = {}
-            rightnow = time.time()
+
+            sys.stdout.write('hang on....')
+            sys.stdout.flush()
             for zg in zgroupinfo:
+                part_count[zg['partition']] = 0
+                # Super ugly hack to try and account for time spent in queue
+                rightnow = time.time()+( (CONSUMER_TIMEOUT/1000)*len(zgroupinfo))
+                
                 count, obytes, queuelist = dump_from_offset(
                         args, 'backbeat-replication', zg['partition'], zg['committed'], zg['last_offset'], nownow=rightnow)
                 output.update(queuelist)
                 o_count += count
                 ttl_bytes += obytes
+                part_count[zg['partition']] += 1
+                
+            print('ok:')
+
             for key in sorted(output):
                 print("{0}".format(output[key]))
-            print("{0} objects for {1}".format(o_count, sizeof_fmt10(ttl_bytes)))
+            
+            print("{0} objects for {1}, max time in-queue: {2:.2f} sec".format(
+                o_count, sizeof_fmt10(ttl_bytes), globals['max_q_time']))
