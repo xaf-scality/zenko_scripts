@@ -1,7 +1,5 @@
 #!/usr/bin/python
-# Quick-n-dirty to dump CRR backlog for a Zenko cloud destination. Can be
-# limited to destination+bucket as well but I haven't tested the output for
-# that.
+# Quick-n-dirty to dump CRR backlog for a Zenko cloud destination.
 import os
 import boto3
 import argparse
@@ -18,9 +16,9 @@ import time
 
 # Until I do a little more book lernin' I'll have to spell-out the Kafka
 # brokers
-KAFA_ADDRS=('10.233.66.185', '10.233.111.236', '10.233.80.157', '10.233.78.203', '10.233.124.236')
+KAFA_ADDRS=()
 KAFA_PORT=9092
-CONSUMER_TIMEOUT=500
+CONSUMER_TIMEOUT=2000
 
 bootstrap = []
 for s in KAFA_ADDRS:
@@ -113,7 +111,7 @@ def dump_from_offset(args, topic, part, offset, end, nownow=None):
         bootstrap_servers=bootstrap,
         group_id="backbeat-replication-group-{0}".format(args.destination),
         enable_auto_commit=False,
-        consumer_timeout_ms=CONSUMER_TIMEOUT
+        consumer_timeout_ms=int(args.timeout)
     )
     partition = TopicPartition(topic, part)
     consumer.assign([partition])
@@ -128,37 +126,57 @@ def dump_from_offset(args, topic, part, offset, end, nownow=None):
             logline = json.loads(msg.value)
             if args.bucket and logline['bucket'] != args.bucket:
                 continue
+            if 'canary' in logline:
+                continue
             value = json.loads(logline['value'])
             for backend in value["replicationInfo"]['backends']:
                 if backend['site'] == args.destination:
-                    line = ""
                     queue_time = nownow - (float(msg.timestamp)/1000)
                     if globals['max_q_time'] < queue_time:
                         globals['max_q_time'] = queue_time
-                    line += 'src: {0}'.format(value['dataStoreName'])
-                    if args.bucket == False:
-                        line += ':{0}'.format(logline['bucket'])
-                    line += ', part: {0}, key: "{1}"'.format(part, value['key'])
-                    if "isDeleteMarker" in value and value["isDeleteMarker"] == True:
-                        line += " (delete)"
+                    
+                    line = ""
+                    if args.csv:
+                        line += '"{0}'.format(value['dataStoreName'])
+                        if args.bucket == False:
+                            line += ':{0}'.format(logline['bucket'])
+                        line += '", {0}, "{1}"'.format(part, value['key'])
+                        if "isDeleteMarker" in value and value["isDeleteMarker"] == True:
+                            line += ', "(delete)"'
+                        else:
+                            line += ", {0}".format(int(value['content-length']))
+                            ttl_bytes += int(value['content-length'])
+                        line += ", {0:.2f}".format(round(queue_time, 2))
+                        o_count += 1
+                        queuelist["{0}{1}".format(str(int(msg.timestamp)), value['key'])] = line
+                        break # we hit the backend we're looking for. stop.
                     else:
-                        line += ", size: {0}".format(sizeof_fmt10(int(value['content-length'])))
-                        ttl_bytes += int(value['content-length'])
-                    line += ", {0:.2f} sec".format(round(queue_time, 2))
-                    o_count += 1
-                    queuelist["{0}{1}".format(str(int(msg.timestamp)), value['key'])] = line
-                    break # we hit the backend we're looking for. stop.
+                        line += 'src: {0}'.format(value['dataStoreName'])
+                        if args.bucket == False:
+                            line += ':{0}'.format(logline['bucket'])
+                        line += ', part: {0}, key: "{1}"'.format(part, value['key'])
+                        if "isDeleteMarker" in value and value["isDeleteMarker"] == True:
+                            line += " (delete)"
+                        else:
+                            line += ", size: {0}".format(sizeof_fmt10(int(value['content-length'])))
+                            ttl_bytes += int(value['content-length'])
+                        line += ", {0:.2f} sec".format(round(queue_time, 2))
+                        o_count += 1
+                        queuelist["{0}{1}".format(str(int(msg.timestamp)), value['key'])] = line
+                        break # we hit the backend we're looking for. stop.
     
     return o_count, ttl_bytes, queuelist
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(description='Show CRR status of a bucket/destination')
+    parser = argparse.ArgumentParser(description='Show CRR status and timings of obejcts headed to a destination')
     parser.add_argument('--queues', '-l', action="store_true", help='List remote destinations available')
     parser.add_argument('--brokerlist', '-r', default=False, help='Kafka broker list; host:port, comma delimited')
     parser.add_argument('--bucket', '-b', default=False, help='List only info on a src (Zenko) bucket')
     parser.add_argument('--destination', '-d', default=False, help='target destination to view')
     parser.add_argument('--summary', '-s', help='just output summary', action="store_true")
+    parser.add_argument('--timeout', '-t', help='consumer timeout', default=CONSUMER_TIMEOUT)
+    parser.add_argument('--csv', '-c', help='output in CSV format', action="store_true", default=False)
     args = parser.parse_args()
 
     if args.brokerlist:
@@ -169,9 +187,11 @@ if __name__ == "__main__":
 
     if args.queues:
         for broker in bootstrap:
-            br = broker.split(":")[0]
-            pt = broker.split(":")[1]
-            list_avail_destinations(args, br, pt)
+            try:
+                br = broker.split(":")[0]
+                pt = broker.split(":")[1]
+                list_avail_destinations(args, br, pt)
+            except: pass
         sys.exit(0)
 
     if args.destination:
@@ -187,24 +207,29 @@ if __name__ == "__main__":
             part_count = {}
             output = {}
 
-            sys.stdout.write('hang on....')
-            sys.stdout.flush()
+            if args.csv:
+                print("src, partition, key, size, seconds in queue")
+            else:
+                sys.stdout.write('hang on....')
+                sys.stdout.flush()
+            
             for zg in zgroupinfo:
-                part_count[zg['partition']] = 0
                 # Super ugly hack to try and account for time spent in queue
-                rightnow = time.time()+( (CONSUMER_TIMEOUT/1000)*len(zgroupinfo))
+                rightnow = time.time()+( (int(args.timeout)/1000)*len(zgroupinfo))
                 
                 count, obytes, queuelist = dump_from_offset(
                         args, 'backbeat-replication', zg['partition'], zg['committed'], zg['last_offset'], nownow=rightnow)
                 output.update(queuelist)
                 o_count += count
                 ttl_bytes += obytes
-                part_count[zg['partition']] += 1
-                
-            print('ok:')
+                part_count[zg['partition']] = len(queuelist)
 
             for key in sorted(output):
                 print("{0}".format(output[key]))
             
-            print("{0} objects for {1}, max time in-queue: {2:.2f} sec".format(
-                o_count, sizeof_fmt10(ttl_bytes), globals['max_q_time']))
+            if not args.csv:
+                print("{0} objects for {1}, max time in-queue: {2:.2f} sec".format(
+                    o_count, sizeof_fmt10(ttl_bytes), globals['max_q_time']))
+                for p in part_count:
+                    print('part {0}: {1}'.format(p, part_count[p]))
+
