@@ -1,8 +1,7 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 import os
 import boto3
 import argparse
-
 
 PROFILE_DEF="default"
 
@@ -41,8 +40,11 @@ def just_go(args):
                 pass
             except Exception as e:
                 print(e)
-              
-            s3.delete_objects(Bucket=args.bucket, Delete=objs)
+
+            if len(objs['Objects']) == 0:
+                print("no versions or markers to delete")
+            else:  
+                s3.delete_objects(Bucket=args.bucket, Delete=objs)
             
     
     paginator = s3.get_paginator('list_multipart_uploads')
@@ -63,7 +65,11 @@ if __name__ == "__main__":
     parser.add_argument('--bucket', required=True)
     parser.add_argument('--profile', default=PROFILE_DEF)
     parser.add_argument('--endpoint', default='https://s3.amazonaws.com')
-    parser.add_argument('--cabundle', default=False)
+    parser.add_argument('--ca-bundle', default=False, dest='cabundle')
     args = parser.parse_args()
 
+    # No idea why boto can't get this vai API
+    if args.cabundle:
+        os.environ['AWS_CA_BUNDLE'] = args.cabundle
+        
     just_go(args)
