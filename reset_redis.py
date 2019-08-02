@@ -1,4 +1,8 @@
 #!/usr/bin/python
+'''
+Ugly hack to get reset the pending and failed counters in redis to fix the
+Orbit UI if things get out of whack.
+'''
 
 import subprocess
 import sys
@@ -6,9 +10,8 @@ import os
 import  argparse
 
 ##
-# Configuration
-release = "galaxy-z"
-kubectl_command_path = "/home/centos/zenko-stack/metalk8s-1.1.0-alpha1/.shell-env/metalk8s/bin/"
+# Configuration (in case this is not already in you PATH)
+kubectl_command_path = "/home/centos/zenko-stack/metalk8s/.shell-env/metalk8s/bin/"
 kubectl_auth = "/home/centos/zenko-stack/metalk8s/inventory/galaxy-z/artifacts/admin.conf"
 
 ##
@@ -18,8 +21,7 @@ subenv["PATH"] = "{0}:{1}".format(kubectl_command_path, os.environ["PATH"])
 subenv["KUBECONFIG"] = kubectl_auth
 
 def find_redis_master():
-    cmd = "kubectl get pods |grep {0} |grep redis".format(release)
-    cmd += "|gawk '{print $1}'"
+    cmd = "kubectl get pods | grep redis | gawk '{print $1}'"
     redis_pods = subprocess.Popen(cmd, shell=True, env=subenv,
                         stdout=subprocess.PIPE).stdout.read().strip().split('\n')
 
