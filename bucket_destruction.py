@@ -3,24 +3,65 @@ import os
 import boto3
 import argparse
 import sys
-from multiprocessing import Pool
+from multiprocessing import Process
 
+##
+# Defaults
 PROFILE_DEF="default"
 SHADUP=False
 LOGSTUFF=True
+WORKERS=5
 
 def just_go(args):
 
-    session = boto3.Session(profile_name=args.profile)
-    s3 = session.client('s3', endpoint_url=args.endpoint)
 
-    zap_objects(args, s3)
-    zap_mpus(args, s3)
+    zap_objects(args)
+    zap_mpus(args)
 
     return True
 
 
-def zap_objects(args, s3):
+def __run_batch(args, ovs):
+    
+    session = boto3.Session(profile_name=args.profile)
+    s3 = session.client('s3', endpoint_url=args.endpoint)
+
+    objs = {'Objects': [], 'Quiet': False}
+    
+    try:
+        for ver in ovs["Versions"]:
+            if args.noncurrent and ver["IsLatest"]:
+                logme("skipping {0} ({1}".format(ver['Key'], ver['VersionId']))
+                continue
+            objs['Objects'].append({'Key': ver['Key'], 'VersionId': ver['VersionId']})
+            logme("deleting {0} ({1}".format(ver['Key'], ver['VersionId']))
+    except KeyError: pass
+    except Exception as e:
+        sys.stderr.write(e)
+
+    if not args.skipmarkers:
+
+        try:
+            for ver in ovs["DeleteMarkers"]:
+                objs['Objects'].append({'Key': ver['Key'], 'VersionId': ver['VersionId']})
+                logme("deleting marker {0} ({1}".format(ver['Key'], ver['VersionId']))
+        except KeyError:
+            pass
+        except Exception as e:
+            sys.stderr.write(e)
+
+    if len(objs['Objects']) == 0:
+        logme("no versions or markers to delete")
+    else:
+        s3.delete_objects(Bucket=args.bucket, Delete=objs)
+    
+
+def zap_objects(args):
+
+    jobs = []
+    
+    session = boto3.Session(profile_name=args.profile)
+    s3 = session.client('s3', endpoint_url=args.endpoint)
 
     lspgntr = s3.get_paginator('list_object_versions')
 
@@ -28,40 +69,21 @@ def zap_objects(args, s3):
         page_iterator = lspgntr.paginate(Bucket=args.bucket, Prefix=args.prefix)
     else:
         page_iterator = lspgntr.paginate(Bucket=args.bucket)
-
+    
+    wrkrcnt = 0
     for ovs in page_iterator:
+        jobs.append(Process(target=__run_batch, args=(args, ovs)))
+        jobs[wrkrcnt].start()
+        wrkrcnt += 1
+        if wrkrcnt >= int(args.workers):
+            for job in jobs: job.join()
+            wrkrcnt = 0
+            jobs.clear()
 
-        objs = {'Objects': [], 'Quiet': False}
-
-        try:
-            for ver in ovs["Versions"]:
-                if args.noncurrent and ver["IsLatest"]:
-                    logme("skipping {0} ({1}".format(ver['Key'], ver['VersionId']))
-                    continue
-                objs['Objects'].append({'Key': ver['Key'], 'VersionId': ver['VersionId']})
-                logme("deleting {0} ({1}".format(ver['Key'], ver['VersionId']))
-        except KeyError: pass
-        except Exception as e:
-            sys.stderr.write(e)
-
-        if not args.skipmarkers:
-
-            try:
-                for ver in ovs["DeleteMarkers"]:
-                    objs['Objects'].append({'Key': ver['Key'], 'VersionId': ver['VersionId']})
-                    logme("deleting marker {0} ({1}".format(ver['Key'], ver['VersionId']))
-            except KeyError:
-                pass
-            except Exception as e:
-                sys.stderr.write(e)
-
-        if len(objs['Objects']) == 0:
-            logme("no versions or markers to delete")
-        else:
-            s3.delete_objects(Bucket=args.bucket, Delete=objs)
-
-
-def zap_mpus(args, s3):
+def zap_mpus(args):
+    
+    session = boto3.Session(profile_name=args.profile)
+    s3 = session.client('s3', endpoint_url=args.endpoint)
 
     lspgntr = s3.get_paginator('list_multipart_uploads')
     page_iterator = lspgntr.paginate(Bucket=args.bucket)
@@ -88,6 +110,8 @@ if __name__ == "__main__":
     parser.add_argument('--prefix', default=False, dest='prefix', help='delete at and beyond prefix')
     parser.add_argument('--noncurrent', action='store_true', help='deletes only non-current objects and markers')
     parser.add_argument('--skipmarkers', action='store_true', help='deletes everything but delete markers')
+    parser.add_argument('--skipmpus', action='store_true', help='skip clean-up of unfinished MPUs')
+    parser.add_argument('--workers', default=WORKERS, help='number of workers to run')
     parser.add_argument('--quiet', action='store_true', help='supress output')
     args = parser.parse_args()
 
