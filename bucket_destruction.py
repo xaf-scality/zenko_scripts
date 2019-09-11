@@ -1,4 +1,7 @@
 #!/usr/bin/python3
+#
+# Multi-session clean-up of S3 buckets. Hopefully fast, absolulty bug free. 
+
 import os
 import boto3
 import argparse
@@ -13,21 +16,27 @@ LOGSTUFF=True
 WORKERS=5
 
 def just_go(args):
-
-
+    '''
+    Ever wonder why you create wrapper functions with only a few lines?
+    I don't.
+    '''
     zap_objects(args)
-    zap_mpus(args)
+    if args.skipmpus != True: zap_mpus(args)
 
     return True
 
 
-def __run_batch(args, ovs):
-    
+def _run_batch(args, ovs):
+    '''
+    Page worker for object and marker removal
+    '''
     session = boto3.Session(profile_name=args.profile)
     s3 = session.client('s3', endpoint_url=args.endpoint)
 
     objs = {'Objects': [], 'Quiet': False}
     
+    ##
+    # Objects and versions
     try:
         for ver in ovs["Versions"]:
             if args.noncurrent and ver["IsLatest"]:
@@ -39,6 +48,8 @@ def __run_batch(args, ovs):
     except Exception as e:
         sys.stderr.write(e)
 
+    ##
+    # Markers
     if not args.skipmarkers:
 
         try:
@@ -57,7 +68,9 @@ def __run_batch(args, ovs):
     
 
 def zap_objects(args):
-
+    '''
+    Bucket listing and worker distribution entry.
+    '''
     jobs = []
     
     session = boto3.Session(profile_name=args.profile)
@@ -72,7 +85,7 @@ def zap_objects(args):
     
     wrkrcnt = 0
     for ovs in page_iterator:
-        jobs.append(Process(target=__run_batch, args=(args, ovs)))
+        jobs.append(Process(target=_run_batch, args=(args, ovs)))
         jobs[wrkrcnt].start()
         wrkrcnt += 1
         if wrkrcnt >= int(args.workers):
@@ -81,7 +94,9 @@ def zap_objects(args):
             jobs.clear()
 
 def zap_mpus(args):
-    
+    '''
+    Clean up any dangling MPUs
+    '''
     session = boto3.Session(profile_name=args.profile)
     s3 = session.client('s3', endpoint_url=args.endpoint)
 
@@ -97,21 +112,22 @@ def zap_mpus(args):
                 logme("deleted {0}".format(mpu['UploadId']))
 
 def logme(text):
+    ''' I know, right? '''
     if LOGSTUFF:
         print(text)
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(description='delete all versions and delete markers in a bucket')
+    parser = argparse.ArgumentParser(description='Delete versions, markers and stray MPUs from an S3 a bucket. You want that bucket empty for removal, right?')
     parser.add_argument('--bucket', required=True)
     parser.add_argument('--profile', default=PROFILE_DEF)
     parser.add_argument('--endpoint', default='https://s3.amazonaws.com')
     parser.add_argument('--ca-bundle', default=False, dest='cabundle')
     parser.add_argument('--prefix', default=False, dest='prefix', help='delete at and beyond prefix')
-    parser.add_argument('--noncurrent', action='store_true', help='deletes only non-current objects and markers')
-    parser.add_argument('--skipmarkers', action='store_true', help='deletes everything but delete markers')
+    parser.add_argument('--noncurrent', action='store_true', help='delete only non-current objects (and markers)')
+    parser.add_argument('--skipmarkers', action='store_true', help='skip deletion of delete markers')
     parser.add_argument('--skipmpus', action='store_true', help='skip clean-up of unfinished MPUs')
-    parser.add_argument('--workers', default=WORKERS, help='number of workers to run')
+    parser.add_argument('--workers', default=WORKERS, help='number of workers to run (default: {0})'.format(WORKERS))
     parser.add_argument('--quiet', action='store_true', help='supress output')
     args = parser.parse_args()
 
