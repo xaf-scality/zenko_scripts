@@ -63,6 +63,8 @@ def _run_batch(args, ovs):
 
     if len(objs['Objects']) == 0:
         logme("no versions or markers to delete")
+    elif args.dryrun:
+        logme('(skipping delete pass)')
     else:
         s3.delete_objects(Bucket=args.bucket, Delete=objs)
     
@@ -108,8 +110,9 @@ def zap_mpus(args):
         if 'Uploads' in mpus:
             logme("Stray/unfinished MPUs found, aborting them....")
             for mpu in mpus['Uploads']:
-                s3.abort_multipart_upload(Bucket=args.bucket, Key=mpu["Key"], UploadId=mpu['UploadId'])
-                logme("deleted {0}".format(mpu['UploadId']))
+                logme("deleting {0}".format(mpu['UploadId']))
+                if not args.dryrun:
+                    s3.abort_multipart_upload(Bucket=args.bucket, Key=mpu["Key"], UploadId=mpu['UploadId'])
 
 def logme(text):
     ''' I know, right? '''
@@ -129,6 +132,7 @@ if __name__ == "__main__":
     parser.add_argument('--skipmpus', action='store_true', help='skip clean-up of unfinished MPUs')
     parser.add_argument('--workers', default=WORKERS, help='number of workers to run (default: {0})'.format(WORKERS))
     parser.add_argument('--quiet', action='store_true', help='supress output')
+    parser.add_argument('--dryrun', action='store_true', help='show objects to be deleted but don\'t (useless with --quiet)')
     args = parser.parse_args()
 
     # No idea why boto can't get this via API
@@ -137,6 +141,10 @@ if __name__ == "__main__":
 
     if args.quiet:
         LOGSTUFF = False
+    
+    if args.dryrun:
+        logme("dry-run, overriding job count (setting to 1)")
+        args.workers = 1
 
     just_go(args)
 
