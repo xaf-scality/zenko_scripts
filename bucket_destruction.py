@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 #
-# Multi-session clean-up of S3 buckets. Hopefully fast, absolulty bug free. 
+# Multi-session clean-up of S3 buckets. Hopefully fast, absolutly bug free. 
 
 import os
 import boto3
@@ -14,6 +14,7 @@ PROFILE_DEF="default"
 SHADUP=False
 LOGSTUFF=True
 WORKERS=5
+RETRIES=5
 
 def just_go(args):
     '''
@@ -46,7 +47,7 @@ def _run_batch(args, ovs):
             logme("deleting {0} ({1}".format(ver['Key'], ver['VersionId']))
     except KeyError: pass
     except Exception as e:
-        sys.stderr.write(e)
+        sys.stderr.write(str(e))
 
     ##
     # Markers
@@ -56,17 +57,23 @@ def _run_batch(args, ovs):
             for ver in ovs["DeleteMarkers"]:
                 objs['Objects'].append({'Key': ver['Key'], 'VersionId': ver['VersionId']})
                 logme("deleting marker {0} ({1}".format(ver['Key'], ver['VersionId']))
-        except KeyError:
-            pass
+        except KeyError: pass
         except Exception as e:
-            sys.stderr.write(e)
+            sys.stderr.write(str(e))
 
     if len(objs['Objects']) == 0:
         logme("no versions or markers to delete")
     elif args.dryrun:
         logme('(skipping delete pass)')
     else:
-        s3.delete_objects(Bucket=args.bucket, Delete=objs)
+        # Script bails sometimes so we'll do some retries
+        for r in range(RETRIES):
+            try:
+                s3.delete_objects(Bucket=args.bucket, Delete=objs)
+            except Exception as e:
+                sys.stderr.write(str(e))
+                continue
+            break
     
 
 def zap_objects(args):
@@ -79,11 +86,7 @@ def zap_objects(args):
     s3 = session.client('s3', endpoint_url=args.endpoint)
 
     lspgntr = s3.get_paginator('list_object_versions')
-
-    if args.prefix:
-        page_iterator = lspgntr.paginate(Bucket=args.bucket, Prefix=args.prefix)
-    else:
-        page_iterator = lspgntr.paginate(Bucket=args.bucket)
+    page_iterator = lspgntr.paginate(Bucket=args.bucket, Prefix=args.prefix)
     
     wrkrcnt = 0
     for ovs in page_iterator:
@@ -93,7 +96,7 @@ def zap_objects(args):
         if wrkrcnt >= int(args.workers):
             for job in jobs: job.join()
             wrkrcnt = 0
-            jobs.clear()
+            jobs = []
 
 def zap_mpus(args):
     '''
@@ -121,12 +124,12 @@ def logme(text):
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(description='Delete versions, markers and stray MPUs from an S3 a bucket. You want that bucket empty for removal, right?')
+    parser = argparse.ArgumentParser(description='Delete versions, markers and stray MPUs from an S3 a bucket. You want that bucket empty for removal, don\'t you?')
     parser.add_argument('--bucket', required=True)
     parser.add_argument('--profile', default=PROFILE_DEF)
     parser.add_argument('--endpoint', default='https://s3.amazonaws.com')
     parser.add_argument('--ca-bundle', default=False, dest='cabundle')
-    parser.add_argument('--prefix', default=False, dest='prefix', help='delete at and beyond prefix')
+    parser.add_argument('--prefix', default='', dest='prefix', help='delete at and beyond prefix')
     parser.add_argument('--noncurrent', action='store_true', help='delete only non-current objects (and markers)')
     parser.add_argument('--skipmarkers', action='store_true', help='skip deletion of delete markers')
     parser.add_argument('--skipmpus', action='store_true', help='skip clean-up of unfinished MPUs')
@@ -146,5 +149,6 @@ if __name__ == "__main__":
         logme("dry-run, overriding job count (setting to 1)")
         args.workers = 1
 
+    # Why are you always preparing?
     just_go(args)
 
