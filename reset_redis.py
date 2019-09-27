@@ -1,7 +1,6 @@
 #!/usr/bin/python
 '''
-Ugly hack to get reset the pending and failed counters in redis to fix the
-Orbit UI if things get out of whack.
+Ugly hack to get reset the pending and failed counters in redis
 '''
 
 import subprocess
@@ -11,8 +10,8 @@ import  argparse
 
 ##
 # Configuration (in case this is not already in you PATH)
-kubectl_command_path = "/home/centos/zenko-stack/metalk8s/.shell-env/metalk8s/bin/"
-kubectl_auth = "/home/centos/zenko-stack/metalk8s/inventory/galaxy-z/artifacts/admin.conf"
+kubectl_command_path = ""
+kubectl_auth = ""
 
 ##
 # Set env
