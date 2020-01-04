@@ -2,8 +2,7 @@ Set of one-off scripts for dealing with Zenko
 
 bucket_destruction.py:  removes all versions, delete markers and unfinished 
                         MPUs from a bucket. There's a script in S3Utils that 
-                        handles this now but I like mine better since it's not
-                        nodejs requiring a bunch of 'npm installs' :-)
+                        handles this but a python tool seems like a good idea
 
 crr_failure_trigger.py: This will send a mail to a configured address when 
                         there are multiple permanenet CRR failures to a 
@@ -18,3 +17,8 @@ list_crr_backlog.py:    Displays objects in back-log for a given location. It
 
 reset_redis.py:         Resets pending and failed counters to clean-up Orbit 
                         UI in case it gets out of sync during testing.
+
+search_bucket.py:       Tool for searching Zenko buckets. Again, there's a 
+                        nodejs tool (that's also installed in the cloudservers)
+                        for this but a python implementation seemed like a good
+                        idea
