@@ -1,16 +1,14 @@
 #!/usr/bin/python3
 
-import sys, os, base64, datetime, hashlib, urllib, hmac
-import argparse
-import requests
-import configparser
-import logging
+import sys, os, base64, hashlib, urllib, hmac, argparse, requests, configparser, boto3, json
+import xml.dom.minidom as MD
 from datetime import datetime
-from time import mktime
-import boto3
-import xml.dom.minidom as MD 
 
 def get_profile(profile):
+    '''
+    Just open the ~/.aws/credentials file and get the creds, this is 
+    easier than digging from boto
+    '''
     config = configparser.ConfigParser()
     config.read('{0}/.aws/credentials'.format(os.environ['HOME']))
 
@@ -29,7 +27,7 @@ def get_profile(profile):
             'secret_key': secret_key})
 
 def parse_endpoint(endpointstr):
-    # chop up the endpoint
+    ''' divied endpoint into useable parts '''
     proto = endpointstr[:endpointstr.find("//")-1]
 
     hostport = endpointstr[(endpointstr.find("//")+2):]
@@ -57,30 +55,40 @@ def getSignatureKey(key, dateStamp, regionName, serviceName):
     return kSigning
 
 def bucket_location(args):
-
+    ''' get bucket location so we can query it '''
     session = boto3.Session(profile_name=args.profile)
     s3 = session.client("s3", endpoint_url=args.endpoint)
     response = s3.get_bucket_location(Bucket=args.bucket)
     return(response)
 
-def get_signed_headers(bucket, searchstr, host, region, access_key, secret_key):
+def get_signed_headers(service, method, canonical_uri, canonical_querystring, host, region, access_key, secret_key, put_data=''):
     '''
-    Sort of a dense process that's documented elsewere better: 
+    v4 signing process is documented elsewhere better: 
     https://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-authenticating-requests.html
+
+    That said, this function should return headers, complete with v4 signature,
+    for a lot of situations. Though certainly nothing close to all.
+    Params:
+        method: GET/PUT/POST/HEAD
+        canonical_uri: everything between the query and the host, don't forget
+            the leading '/' (e.g. /mybucket)
+        canonical_querystring: ordered (by key) list of query items
+        host: endpoint host, remember to include the port if using a non-
+            standard port for http/https
+        region: aws region you're accessing
+        access_key/secret_key: you know
+        put_data: if there's a payload, put it here. It needs to be signed.
     '''
-    # We're at now now:
+    # We're at now now (Q: when will then be now? A: soon):
     t = datetime.utcnow()
     amzdate = t.strftime('%Y%m%dT%H%M%SZ')
     datestamp = t.strftime('%Y%m%d')
     algorithm = 'AWS4-HMAC-SHA256'
-    service = 's3'
-    canonical_uri = '/{0}'.format(bucket)
-    canonical_querystring = 'search='+urllib.parse.quote_plus(searchstr)
     signed_headers = 'host;x-amz-content-sha256;x-amz-date'
-    payload_hash = hashlib.sha256(('').encode('utf-8')).hexdigest()
+    payload_hash = hashlib.sha256((put_data).encode('utf-8')).hexdigest()
     canonical_headers = 'host:{0}\nx-amz-content-sha256:{1}\nx-amz-date:{2}\n'.format(host, payload_hash, amzdate)
     canonical_request = '{0}\n{1}\n{2}\n{3}\n{4}\n{5}'.format(
-            'GET',
+            method,
             canonical_uri,
             canonical_querystring,
             canonical_headers,
@@ -101,18 +109,60 @@ def get_signed_headers(bucket, searchstr, host, region, access_key, secret_key):
         )
     return {'x-amz-date':amzdate, 'x-amz-content-sha256': payload_hash, 'Authorization':authorization_header}
 
-def print_raw(xmltxt):
-    print(xmltxt)
 
 def print_xml(xmltxt):
     parsed = MD.parseString(xmltxt)
     print(parsed.toprettyxml(indent="    "))
 
-def print_json(xmltxt):
-    print("not implimented")
+def print_json(xmltext):
+    print(json.dumps(get_json(xmltext)))
+
+def get_json(xmltxt):
+    ''' parsing DOM is stupid '''
+    xmlout = MD.parseString(xmltxt)
+    output = {
+        "MaxKeys": int(xmlout.getElementsByTagName('MaxKeys')[0].firstChild.nodeValue),
+        "Name": xmlout.getElementsByTagName('Name')[0].firstChild.nodeValue,
+        "IsTruncated": xmlout.getElementsByTagName('IsTruncated')[0].firstChild.nodeValue,
+        "Contents": []
+    }
+    for node in xmlout.getElementsByTagName('Contents'):
+        output['Contents'].append(
+            {
+                "Key": node.getElementsByTagName('Key')[0].firstChild.nodeValue,
+                "LastModified": node.getElementsByTagName('LastModified')[0].firstChild.nodeValue,
+                "Size": int(node.getElementsByTagName('Size')[0].firstChild.nodeValue),
+                "ETag": node.getElementsByTagName('ETag')[0].firstChild.nodeValue,
+                "StorageClass": node.getElementsByTagName('StorageClass')[0].firstChild.nodeValue,
+                "Owner": {
+                    "ID": node.getElementsByTagName('ID')[0].firstChild.nodeValue,
+                    "DisplayName": node.getElementsByTagName('DisplayName')[0].firstChild.nodeValue
+                }
+            }
+        )
+    return(output)
 
 def print_csv(xmltxt):
-    print("not implimented")
+    objdata = get_json(xmltxt)
+    print('Name,MaxKeys,IsTruncated')
+    print('{0},{1},{2}'.format(objdata['Name'], objdata['MaxKeys'], objdata['IsTruncated']))
+    print('')
+    print("Owner ID,Owner DisplayName,ETag,StorageClass,LastModified,Size,Key")
+    for item in objdata['Contents']:
+        print('{0},{1},{2},{3},{4},{5},{6}'.format(
+            item['Owner']['ID'],
+            item['Owner']['DisplayName'],
+            item['ETag'],
+            item['StorageClass'],
+            item['LastModified'],
+            item['Size'],
+            item['Key'],
+        ))
+    
+def just_the_keys_please(xmltxt):
+    objdata = get_json(xmltxt)
+    for item in objdata['Contents']:
+        print(item['Key'])
 
 if __name__ == "__main__":
 
@@ -124,7 +174,7 @@ if __name__ == "__main__":
     parser.add_argument("--endpoint", default="https://s3.amazonaws.com", help='zenko endpoint URL')
     parser.add_argument("--ca-bundle", default=False, dest="cabundle")
     parser.add_argument("--query", default="", help="zenko md search query (e.g. tags.color=green)")
-    parser.add_argument("--output", default="xml", help="one of: raw, xml, json or csv")
+    parser.add_argument("--output", default="raw", help="one of: raw, xml, json, csv or keys (for bare keylist)")
     args = parser.parse_args()
 
     if args.cabundle:
@@ -141,26 +191,34 @@ if __name__ == "__main__":
     creds = get_profile(args.profile)
     epdata = parse_endpoint(args.endpoint)
 
+    # May as well make the query canonical now since we need it later. Easy in
+    # this case since there's only one query. Also, putting spaces in the query
+    # seems to piss-off the XML parser.
+    canonical_querystring = 'search={0}'.format(
+            urllib.parse.quote_plus(args.query).replace('+', '%20'))
+
+    # Set up the headers complete with signature
     headers = get_signed_headers(
-            args.bucket,
-            args.query,
+            's3',
+            'GET',
+            '/{0}'.format(args.bucket),
+            canonical_querystring,
             epdata['hostport'],
             region,
             creds['access_key'],
             creds['secret_key'])
     
-    #request_url = endpoint + '/weka-lab-tier-vrtx-1?' + canonical_querystring
-    request_url = '{0}/{1}?{2}'.format(args.endpoint, args.bucket, 'search='+urllib.parse.quote_plus(args.query))
-    r = requests.get(request_url, headers=headers)
-    
-    if args.output == 'xml':
-        print_xml(r.text)
-    elif args.output == 'raw':
-        print_raw(r.text)
-    elif args.output == 'json':
-        print_json(r.text)
-    elif args.output == 'csv':
-        print_csv(r.text)
-    else: print(r.text)
+    request_url = '{0}/{1}?{2}'.format(args.endpoint, args.bucket, canonical_querystring)
 
+    result = requests.get(request_url, headers=headers)
     
+    # Various output formats. Kind of only care about JSON.
+    if args.output == 'xml':
+        print_xml(result.text)
+    elif args.output == 'json':
+        print_json(result.text)
+    elif args.output == 'csv':
+        print_csv(result.text)
+    elif args.output == 'keys':
+        just_the_keys_please(result.text)
+    else: print(result.text)
