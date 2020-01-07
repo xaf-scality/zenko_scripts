@@ -91,8 +91,9 @@ def get_signed_headers(
     v4 signing process is documented elsewhere better:
     https://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-authenticating-requests.html
 
-    That said, this function should return headers, complete with v4 signature,
-    for a lot of situations. Though certainly nothing close to all.
+    This function will likely only work for S3 GET requests so don't try to use
+    it for anything else.
+
     Params:
         method: GET/PUT/POST/HEAD
         canonical_uri: everything between the query and the host, don't forget
@@ -104,6 +105,7 @@ def get_signed_headers(
         access_key/secret_key: you know
         put_data: if there's a payload, put it here. It needs to be signed.
     """
+    
     # We're at now now (Q: when will then be now? A: soon):
     t = datetime.utcnow()
     amzdate = t.strftime("%Y%m%dT%H%M%SZ")
