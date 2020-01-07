@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # Command-line search tool that uses the Zenko metadata search API. Search your
-# buckets with Python the way God indended. No boutique imports.
+# buckets with Python the way God intended. No boutique imports.
 #
 # current (known) limitations:
 # - No paging, if your search returns more than 1000 keys then tough. I'm
@@ -75,7 +75,7 @@ def bucket_location(args):
     return response
 
 
-# God forgive me for the sheer number of positional argments
+# God forgive me for the sheer number of positional arguments
 def get_signed_headers(
     service,
     method,
@@ -243,7 +243,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # CA bundles are only configurable via environemnt
+    # CA bundles are only configurable via environment
     if args.cabundle:
         os.environ["AWS_CA_BUNDLE"] = args.cabundle
         os.environ["REQUESTS_CA_BUNDLE"] = args.cabundle
