@@ -227,6 +227,11 @@ def canonical_query_me(keyvalues):
         )
     return query_str[1:]
 
+def show_error(xmltext):
+    xmlout = MD.parseString(xmltext)
+    codemsg = xmlout.getElementsByTagName('Code')[0].firstChild.nodeValue
+    errmsg = xmlout.getElementsByTagName('Message')[0].firstChild.nodeValue
+    sys.stderr.write("{0} - {1}\n".format(codemsg, errmsg))
 
 if __name__ == "__main__":
 
@@ -290,6 +295,10 @@ if __name__ == "__main__":
 
         # Moment of truth
         result = requests.get(request_url, headers=headers)
+        
+        if result.status_code >= 400:
+            show_error(result.text)
+            sys.exit(1)
 
         result_json = get_json(result.text)
 
