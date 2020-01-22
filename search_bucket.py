@@ -1,11 +1,6 @@
 #!/usr/bin/python3
 # Command-line search tool that uses the Zenko metadata search API. Search your
 # buckets with Python the way God intended. No boutique imports.
-#
-# current (known) limitations:
-# - No paging, if your search returns more than 1000 keys then tough. I'm
-#   working on it.
-
 import sys, os, base64, hashlib, urllib, hmac, argparse, requests, configparser, boto3, json
 import xml.dom.minidom as MD
 from datetime import datetime
