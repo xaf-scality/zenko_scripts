@@ -153,11 +153,6 @@ def print_xml(xmltxt):
     print(parsed.toprettyxml(indent="    "))
 
 
-def print_json(xmltext):
-    """ Print (not pretty) JSON """
-    print(json.dumps(get_json(xmltext)))
-
-
 def get_json(xmltxt):
     """
     Parsing the DOM is stupid, so let's do this only once here and use JSON
@@ -195,8 +190,7 @@ def get_json(xmltxt):
     return output
 
 
-def print_csv(xmltxt):
-    objdata = get_json(xmltxt)
+def print_csv(objdata):
     print("Name,MaxKeys,IsTruncated")
     print(
         "{0},{1},{2}".format(
@@ -219,9 +213,8 @@ def print_csv(xmltxt):
         )
 
 
-def just_the_keys_please(xmltxt):
+def just_the_keys_please(objdata):
     """ Sometimes you just want the list of keys """
-    objdata = get_json(xmltxt)
     for item in objdata["Contents"]:
         print(item["Key"])
 
@@ -242,7 +235,7 @@ def canonical_query_me(keyvalues):
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(description="Seach a bucket. Go ahead. Try it.")
+    parser = argparse.ArgumentParser(description="Search a bucket. Go ahead. Try it.")
     parser.add_argument("--bucket", required=True)
     parser.add_argument(
         "--profile", default="default", help="boto3 profile name to use for credentials"
@@ -252,7 +245,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--ca-bundle", default=False, dest="cabundle")
     parser.add_argument(
-        "--query", default="", help="zenko md search query (e.g. tags.color=green)"
+        "--query", default="", help="Zenko md search query (e.g. tags.color=green)"
     )
     parser.add_argument(
         "--output",
@@ -312,14 +305,14 @@ if __name__ == "__main__":
             isTruncated = False
 
         # Various output formats. Kind of only care about JSON. This does not
-        # compile things into a single object for XLM and JSON ouput.
+        # compile things into a single object for XML and JSON output.
         if args.output == "xml":
             print_xml(result.text)
         elif args.output == "json":
-            print_json(result.text)
+            print(json.dumps(result_json))
         elif args.output == "csv":
-            print_csv(result.text)
+            print_csv(result_json)
         elif args.output == "keys":
-            just_the_keys_please(result.text)
+            just_the_keys_please(result_json)
         else:
             print(result.text)
