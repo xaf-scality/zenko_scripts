@@ -68,7 +68,9 @@ def getSignatureKey(key, dateStamp, regionName, serviceName):
 
 
 def bucket_location(args):
-    """ get bucket location so we can query it """
+    """
+    Get bucket location so we can query it, we load-up boto3 just for this. :-)
+    """
     session = boto3.Session(profile_name=args.profile)
     s3 = session.client("s3", endpoint_url=args.endpoint)
     response = s3.get_bucket_location(Bucket=args.bucket)
@@ -88,7 +90,7 @@ def get_signed_headers(
     put_data="",
 ):
     """
-    v4 signing process is documented elsewhere better:
+    v4 signing process is documented here:
     https://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-authenticating-requests.html
 
     This function will likely only work for S3 GET requests so don't try to use
@@ -105,7 +107,7 @@ def get_signed_headers(
         access_key/secret_key: you know
         put_data: if there's a payload, put it here. It needs to be signed.
     """
-    
+
     # We're at now now (Q: when will then be now? A: soon):
     t = datetime.utcnow()
     amzdate = t.strftime("%Y%m%dT%H%M%SZ")
@@ -224,6 +226,20 @@ def just_the_keys_please(xmltxt):
         print(item["Key"])
 
 
+def canonical_query_me(keyvalues):
+    if len(keyvalues) == 0:
+        return ""
+    query_str = ""
+    for key in sorted(keyvalues.keys()):
+        query_str = "{0}&{1}".format(
+            query_str,
+            "{0}={1}".format(
+                key, urllib.parse.quote_plus(keyvalues[key]).replace("+", "%20")
+            ),
+        )
+    return query_str[1:]
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Seach a bucket. Go ahead. Try it.")
@@ -240,7 +256,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--output",
-        default="raw",
+        default="keys",
         help="one of: raw, xml, json, csv or keys (for bare keylist)",
     )
     args = parser.parse_args()
@@ -259,42 +275,51 @@ if __name__ == "__main__":
 
     creds = get_profile(args.profile)
     epdata = parse_endpoint(args.endpoint)
+    query_items = {"search": args.query, "max-keys": "2000"}
+    marker = ""
+    isTruncated = True  # Let's get this party started
+    while isTruncated == True:
+        if marker != "":
+            query_items["marker"] = marker
 
-    # May as well make the query canonical now since we need it later. Easy in
-    # this case since there's only one query. Also, putting spaces in the query
-    # seems to piss-off the signing process. This is fixed by using "%20" for
-    # spaces instead of "+" which is dumb I guess.
-    canonical_querystring = "search={0}".format(
-        urllib.parse.quote_plus(args.query).replace("+", "%20")
-    )
+        canonical_querystring = canonical_query_me(query_items)
 
-    # Set up the headers complete with signature
-    headers = get_signed_headers(
-        "s3",
-        "GET",
-        "/{0}".format(args.bucket),
-        canonical_querystring,
-        epdata["hostport"],
-        region,
-        creds["access_key"],
-        creds["secret_key"],
-    )
+        # Set up the headers complete with signature
+        headers = get_signed_headers(
+            "s3",
+            "GET",
+            "/{0}".format(args.bucket),
+            canonical_querystring,
+            epdata["hostport"],
+            region,
+            creds["access_key"],
+            creds["secret_key"],
+        )
 
-    request_url = "{0}/{1}?{2}".format(
-        args.endpoint, args.bucket, canonical_querystring
-    )
+        request_url = "{0}/{1}?{2}".format(
+            args.endpoint, args.bucket, canonical_querystring
+        )
 
-    # Moment of truth
-    result = requests.get(request_url, headers=headers)
+        # Moment of truth
+        result = requests.get(request_url, headers=headers)
 
-    # Various output formats. Kind of only care about JSON.
-    if args.output == "xml":
-        print_xml(result.text)
-    elif args.output == "json":
-        print_json(result.text)
-    elif args.output == "csv":
-        print_csv(result.text)
-    elif args.output == "keys":
-        just_the_keys_please(result.text)
-    else:
-        print(result.text)
+        result_json = get_json(result.text)
+
+        if result_json["IsTruncated"] == "true":
+            isTruncated = True
+            marker = result_json["Contents"][-1]["Key"]
+        else:
+            isTruncated = False
+
+        # Various output formats. Kind of only care about JSON. This does not
+        # compile things into a single object for XLM and JSON ouput.
+        if args.output == "xml":
+            print_xml(result.text)
+        elif args.output == "json":
+            print_json(result.text)
+        elif args.output == "csv":
+            print_csv(result.text)
+        elif args.output == "keys":
+            just_the_keys_please(result.text)
+        else:
+            print(result.text)
