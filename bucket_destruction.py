@@ -139,7 +139,7 @@ def logme(text):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
-        description="Delete versions, markers and stray MPUs from an S3 a bucket. You want that bucket empty for removal, don't you?"
+        description="Delete versions, markers and stray MPUs from an S3 a bucket. Not necessarily in that order."
     )
     parser.add_argument("--bucket", required=True)
     parser.add_argument("--profile", default=PROFILE_DEF)

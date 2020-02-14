@@ -4,6 +4,7 @@
 import sys, os, base64, hashlib, urllib, hmac, argparse, requests, configparser, boto3, json
 import xml.dom.minidom as MD
 from datetime import datetime
+from boto3.s3.transfer import TransferConfig
 
 
 def get_profile(profile):
@@ -72,6 +73,10 @@ def bucket_location(args):
     return response
 
 
+def location_noboto():
+    pass
+
+
 # God forgive me for the sheer number of positional arguments
 def get_signed_headers(
     service,
@@ -103,12 +108,16 @@ def get_signed_headers(
         put_data: if there's a payload, put it here. It needs to be signed.
     """
 
+    if put_data == None:
+        signed_headers = "host;x-amz-date"
+    else:
+        signed_headers = "host;x-amz-content-sha256;x-amz-date"
+
     # We're at now now (Q: when will then be now? A: soon):
     t = datetime.utcnow()
     amzdate = t.strftime("%Y%m%dT%H%M%SZ")
     datestamp = t.strftime("%Y%m%d")
     algorithm = "AWS4-HMAC-SHA256"
-    signed_headers = "host;x-amz-content-sha256;x-amz-date"
     payload_hash = hashlib.sha256((put_data).encode("utf-8")).hexdigest()
     canonical_headers = "host:{0}\nx-amz-content-sha256:{1}\nx-amz-date:{2}\n".format(
         host, payload_hash, amzdate
@@ -150,8 +159,8 @@ def print_xml(xmltxt):
 
 def get_json(xmltxt):
     """
-    Parsing the DOM is stupid, so let's do this only once here and use JSON
-    everywhere else.
+    Parsing the DOM is stupid, so let's do this only once here and convert good
+    output to JSON everywhere else.
     """
     xmlout = MD.parseString(xmltxt)
     output = {
@@ -227,11 +236,34 @@ def canonical_query_me(keyvalues):
         )
     return query_str[1:]
 
+
 def show_error(xmltext):
     xmlout = MD.parseString(xmltext)
-    codemsg = xmlout.getElementsByTagName('Code')[0].firstChild.nodeValue
-    errmsg = xmlout.getElementsByTagName('Message')[0].firstChild.nodeValue
+    codemsg = xmlout.getElementsByTagName("Code")[0].firstChild.nodeValue
+    errmsg = xmlout.getElementsByTagName("Message")[0].firstChild.nodeValue
     sys.stderr.write("{0} - {1}\n".format(codemsg, errmsg))
+
+
+def get_objects(result_json, args):
+    """
+    Get objects listed in JSON output. Yeah, I get it, it's just as easy to
+    pipe key output to something but... shut up.
+    """
+    session = boto3.Session(profile_name=args.profile)
+    s3 = session.client("s3", endpoint_url=args.endpoint)
+
+    for item in result_json["Contents"]:
+        if args.basename:
+            destpath = os.path.basename(item["Key"])
+        else:
+            destpath = item["Key"]
+            mkme = item["Key"][: item["Key"].rfind("/")]
+            os.makedirs("{0}/{1}".format(args.path, mkme), exist_ok=True)
+        s3.download_file(
+            args.bucket, item["Key"], "{0}/{1}".format(args.path, destpath)
+        )
+        print(item["Key"])
+
 
 if __name__ == "__main__":
 
@@ -252,6 +284,17 @@ if __name__ == "__main__":
         default="keys",
         help="one of: raw, xml, json, csv or keys (for bare keylist)",
     )
+    parser.add_argument(
+        "--download",
+        default=False,
+        dest="path",
+        help="get objects returned by the search, download to PATH",
+    )
+    parser.add_argument(
+        "--basename",
+        action="store_true",
+        help="when downloading objects with prefixes, use only the basename of the key as the destination file name; colissions unhandled",
+    )
     args = parser.parse_args()
 
     # CA bundles are only configurable via environment
@@ -260,6 +303,7 @@ if __name__ == "__main__":
         os.environ["REQUESTS_CA_BUNDLE"] = args.cabundle
 
     location_info = bucket_location(args)
+
     if "LocationConstraint" in location_info:
         region = location_info["LocationConstraint"]
     else:
@@ -295,12 +339,16 @@ if __name__ == "__main__":
 
         # Moment of truth
         result = requests.get(request_url, headers=headers)
-        
+
         if result.status_code >= 400:
             show_error(result.text)
             sys.exit(1)
 
-        result_json = get_json(result.text)
+        try:
+            result_json = get_json(result.text)
+        except Exception as e:
+            sys.stderr.write("{0}\n".format(e))
+            sys.exit(1)
 
         if result_json["IsTruncated"] == "true":
             isTruncated = True
@@ -309,8 +357,10 @@ if __name__ == "__main__":
             isTruncated = False
 
         # Various output formats. Kind of only care about JSON. This does not
-        # compile things into a single object for XML and JSON output.
-        if args.output == "xml":
+        # compile pages into a single object for XML and JSON output.
+        if args.path:
+            get_objects(result_json, args)
+        elif args.output == "xml":
             print_xml(result.text)
         elif args.output == "json":
             print(json.dumps(result_json))
