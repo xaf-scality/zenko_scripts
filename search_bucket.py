@@ -306,6 +306,8 @@ if __name__ == "__main__":
 
     if "LocationConstraint" in location_info:
         region = location_info["LocationConstraint"]
+        if region is None:
+            region = "us-east-1"
     else:
         sys.stderr.write("bucket does not exist? exiting.\n")
         sys.exit(1)
